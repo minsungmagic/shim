@@ -21,6 +21,8 @@ class Factory:
         self.total_products = 0  # 전체 생성된 제품 수
         self.completed_products = 0  # 완료된 제품 수
         self.packaging_store = simpy.Store(env)  # 패키징 대기 제품
+        self.current_order = None  # 현재 처리 중인 주문 (order_id, num_products)
+        self.current_order_completed = 0  # 현재 주문의 완료된 제품 수
         self.env.process(self.process_orders())  # 주문 처리 프로세스 시작
 
     def add_order(self, order_id, num_products):
@@ -28,15 +30,19 @@ class Factory:
         self.total_products += num_products
 
     def can_accept_order(self):
-        # 패키징 대기 제품이 전체 제품의 70% 미만인지 확인
-        if self.total_products == 0:
+        # 현재 주문이 없으면 새 주문을 받을 수 있음
+        if not self.current_order:
             return True
-        return (len(self.packaging_store.items) / self.total_products) < 0.7
+        # 현재 주문의 완료된 제품 수가 70% 이상인지 확인
+        order_id, num_products = self.current_order
+        return (self.current_order_completed / num_products) >= 0.7
 
     def process_orders(self):
         while True:
             if self.order_queue:
-                order_id, num_products = self.order_queue.popleft()  # FIFO로 주문 꺼내기
+                self.current_order = self.order_queue.popleft()  # FIFO로 주문 꺼내기
+                self.current_order_completed = 0  # 현재 주문의 완료된 제품 수 초기화
+                order_id, num_products = self.current_order
                 yield self.env.process(self.process_order(order_id, num_products))
             yield self.env.timeout(1)
 
@@ -56,11 +62,13 @@ class Factory:
         # 패키징 대기열에 제품 추가
         for product in completed_products:
             self.packaging_store.put(product)
+            self.current_order_completed += 1  # 완료된 제품 수 증가
         self.completed_products += num_products
         self.metrics.record_order(order_id, num_products)  # 주문 완료 기록
         print(f"{self.env.now:.2f}분: 주문 {order_id} 모든 제품 생산 완료, 패키징 대기열에 추가 (총 {num_products}개 제품)")
         # 패키징 프로세스 시작
         yield self.env.process(self.package_order(order_id, num_products))
+        self.current_order = None  # 주문 완료 후 현재 주문 초기화
 
     def package_order(self, order_id, num_products):
         products = []
